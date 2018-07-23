@@ -30,7 +30,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <arpa/inet.h> 
+#include <arpa/inet.h>
 #include <sys/select.h>
 #include <sys/time.h>
 #include <errno.h>
@@ -38,6 +38,7 @@
 #include <sys/select.h>
 #include <sys/mount.h>
 #include <sys/wait.h>
+#include <net/route.h>
 
 #include <libslirp.h>
 #include <error.h>
@@ -57,7 +58,7 @@ tun_alloc (char *dev)
 
   memset (&ifr, 0, sizeof(ifr));
 
-  ifr.ifr_flags = IFF_TAP | IFF_NO_PI; 
+  ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
   if (*dev)
     strncpy (ifr.ifr_name, dev, IFNAMSIZ);
 
@@ -84,12 +85,13 @@ main (int argc, char **argv)
   int fd, s_fd;
   int sv[2];
   pid_t pid;
+  int configure_network = getenv ("CONFIGURE_NETWORK") ? 1 : 0;
 #define BUF_SIZE (1 << 12)
   char *buffer;
 
   if (argc < 2)
     error (EXIT_FAILURE, 0, "please specify the network namespace destination file");
-  
+
   if (socketpair (AF_UNIX, SOCK_DGRAM, 0, sv) < 0)
     exit (EXIT_FAILURE);
 
@@ -115,15 +117,51 @@ main (int argc, char **argv)
       if (file.fd < 0)
         exit (EXIT_FAILURE);
 
-      ifr.ifr_flags = IFF_UP;
-      strcpy (ifr.ifr_name, name);
-
       sockfd = socket (AF_INET, SOCK_DGRAM, 0);
       if (sockfd < 0)
         error (EXIT_FAILURE, errno, "cannot create socket");
 
+      memset (&ifr, 0, sizeof (ifr));
+      ifr.ifr_flags = IFF_UP | IFF_RUNNING;
+      strcpy (ifr.ifr_name, name);
+
       if (ioctl (sockfd, SIOCSIFFLAGS, &ifr) < 0)
         error (EXIT_FAILURE, errno, "cannot set device up");
+
+      if (configure_network)
+        {
+          struct rtentry route;
+          struct sockaddr_in *sai = (struct sockaddr_in*) &ifr.ifr_addr;
+
+          sai->sin_family = AF_INET;
+          sai->sin_port = 0;
+          inet_pton (AF_INET, "10.0.2.10", &sai->sin_addr);
+
+          if (ioctl (sockfd, SIOCSIFADDR, &ifr) < 0)
+            error (EXIT_FAILURE, errno, "cannot set device address");
+
+          inet_pton (AF_INET, "255.255.255.0", &sai->sin_addr);
+          if (ioctl (sockfd, SIOCSIFNETMASK, &ifr) < 0)
+            error (EXIT_FAILURE, errno, "cannot set device netmask");
+
+          memset (&route, 0, sizeof (route));
+          sai = (struct sockaddr_in*) &route.rt_gateway;
+          sai->sin_family = AF_INET;
+          inet_pton (AF_INET, "10.0.2.2", &sai->sin_addr);
+          sai = (struct sockaddr_in*) &route.rt_dst;
+          sai->sin_family = AF_INET;
+          sai->sin_addr.s_addr = INADDR_ANY;
+          sai = (struct sockaddr_in*) &route.rt_genmask;
+          sai->sin_family = AF_INET;
+          sai->sin_addr.s_addr = INADDR_ANY;
+
+          route.rt_flags = RTF_UP | RTF_GATEWAY;
+          route.rt_metric = 0;
+          route.rt_dev = name;
+
+          if (ioctl (sockfd, SIOCADDRT, &route) < 0)
+            error (EXIT_FAILURE, errno, "set route");
+        }
 
       close (sockfd);
 
@@ -158,7 +196,7 @@ main (int argc, char **argv)
     }
 
   signal (SIGINT, sigint);
-  
+
   if (slirp_start (slirp_session) < 0)
     exit (EXIT_FAILURE);
 
@@ -212,7 +250,7 @@ main (int argc, char **argv)
   free (buffer);
 
   umount (argv[1]);
-  
+
   slirp_close (slirp_session);
   return 0;
 }
