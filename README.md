@@ -12,6 +12,12 @@ root privileges or a suid program to configure the network.  A TAP
 device is created inside a new network namespace.  Data is shuttled
 from the TAP device to the SLiRP stack running outside.
 
+Notes
+======
+I've stopped working on this project as I've found that @AkihiroSuda
+had already something similar so we joined our efforts in:
+[slirp4netns](https://github.com/rootless-containers/slirp4netns)
+
 Requirements
 ============
 slirp-forwarder internally uses [libslirp](https://github.com/rd235/libslirp),
